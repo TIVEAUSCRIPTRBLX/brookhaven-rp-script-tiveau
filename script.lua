@@ -301,6 +301,7 @@ local S = {
     speedOn = false, jumpOn = false, infJump = false, noclip = false,
     fly = false, vehFly = false, vehInvert = false,
     esp = false, fullbright = false, antiAfk = false, clickTp = false,
+    flinging = false,
 }
 
 -- =====================================================================
@@ -1066,6 +1067,147 @@ end)
 local unload
 Button(pMisc, "Décharger le panel", function() unload() end)
 
+
+
+-- =====================================================================
+--  FLING
+-- =====================================================================
+local function cleanFling()
+    local r = root()
+    if r then
+        local b = r:FindFirstChild("TIVEAU_FlingBV")
+        if b then b:Destroy() end
+    end
+end
+
+local function flingOne(target, duration)
+    local c, h, r = char(), hum(), root()
+    if not (c and h and r) or h.Health <= 0 then return false end
+    local tc = target.Character
+    local th = tc and tc:FindFirstChildOfClass("Humanoid")
+    local tr = tc and ((th and th.RootPart) or tc:FindFirstChild("HumanoidRootPart"))
+    local thead = tc and tc:FindFirstChild("Head")
+    if not (tc and th and tr) then return false end
+
+    local old = r.CFrame
+    local oldDestroy = workspace.FallenPartsDestroyHeight
+    workspace.FallenPartsDestroyHeight = 0 / 0
+
+    local oldProps = {}
+    for _, d in ipairs(c:GetDescendants()) do
+        if d:IsA("BasePart") then
+            oldProps[d] = d.CustomPhysicalProperties
+            d.CustomPhysicalProperties = PhysicalProperties.new(math.huge, 0.3, 0.5)
+        end
+    end
+    local bv = new("BodyVelocity", { Name = "TIVEAU_FlingBV", Velocity = Vector3.new(9e8, 9e8, 9e8),
+        MaxForce = Vector3.new(math.huge, math.huge, math.huge) }, r)
+    h:SetStateEnabled(Enum.HumanoidStateType.Seated, false)
+    cam().CameraSubject = thead or th
+
+    local base = tr
+    if thead and (tr.Position - thead.Position).Magnitude > 5 then base = thead end
+
+    local function fpos(pos, ang)
+        local cf = CFrame.new(base.Position) * pos * ang
+        r.CFrame = cf
+        c:PivotTo(cf)
+        r.AssemblyLinearVelocity = Vector3.new(9e7, 9e8, 9e7)
+        r.AssemblyAngularVelocity = Vector3.new(9e8, 9e8, 9e8)
+        RunService.Heartbeat:Wait()
+    end
+
+    local t0, angle = os.clock(), 0
+    while alive and S.flinging and os.clock() - t0 < duration do
+        if not (r.Parent and base.Parent and tc.Parent and target.Parent and h.Health > 0) then break end
+        local spd = base.AssemblyLinearVelocity.Magnitude
+        if spd > 500 then break end
+        local md = th.MoveDirection
+        if spd < 50 then
+            angle += 100
+            local a = CFrame.Angles(math.rad(angle), 0, 0)
+            local ex = md * spd / 1.25
+            fpos(CFrame.new(0, 1.5, 0) + ex, a)
+            fpos(CFrame.new(0, -1.5, 0) + ex, a)
+            fpos(CFrame.new(2.25, 1.5, -2.25) + ex, a)
+            fpos(CFrame.new(-2.25, -1.5, 2.25) + ex, a)
+            fpos(CFrame.new(0, 1.5, 0) + md, a)
+            fpos(CFrame.new(0, -1.5, 0) + md, a)
+        else
+            local ws = th.WalkSpeed
+            fpos(CFrame.new(0, 1.5, ws), CFrame.Angles(math.rad(90), 0, 0))
+            fpos(CFrame.new(0, -1.5, -ws), CFrame.Angles(0, 0, 0))
+            fpos(CFrame.new(0, 1.5, ws), CFrame.Angles(math.rad(90), 0, 0))
+            fpos(CFrame.new(0, 1.5, spd / 1.25), CFrame.Angles(math.rad(90), 0, 0))
+            fpos(CFrame.new(0, -1.5, -spd / 1.25), CFrame.Angles(0, 0, 0))
+        end
+    end
+
+    if bv then bv:Destroy() end
+    pcall(function() h:SetStateEnabled(Enum.HumanoidStateType.Seated, true) end)
+    for part, props in pairs(oldProps) do
+        if part.Parent then part.CustomPhysicalProperties = props end
+    end
+    local tries = 0
+    repeat
+        tries += 1
+        if not r.Parent then break end
+        local back = old * CFrame.new(0, 0.5, 0)
+        r.CFrame = back
+        c:PivotTo(back)
+        pcall(function() h:ChangeState(Enum.HumanoidStateType.GettingUp) end)
+        for _, d in ipairs(c:GetChildren()) do
+            if d:IsA("BasePart") then
+                d.AssemblyLinearVelocity = Vector3.zero
+                d.AssemblyAngularVelocity = Vector3.zero
+            end
+        end
+        RunService.Heartbeat:Wait()
+    until (tries >= 10 and (r.Position - old.Position).Magnitude < 25) or tries > 150
+    workspace.FallenPartsDestroyHeight = oldDestroy
+    local mh = hum()
+    if mh then cam().CameraSubject = mh end
+    return true
+end
+
+local function flingList(list)
+    if S.flinging then
+        notify("Un fling est déjà en cours (clique sur Stop)", "bad")
+        return
+    end
+    if #list == 0 then
+        notify("Aucun autre joueur dans le serveur", "bad")
+        return
+    end
+    S.flinging = true
+    local done = 0
+    for _, p in ipairs(list) do
+        if not (alive and S.flinging) then break end
+        notify("💥 Fling sur " .. p.DisplayName)
+        local ok, res = pcall(flingOne, p, Config.settings.flingTime or 2.5)
+        if not ok then
+            notify("Erreur fling : " .. tostring(res), "bad")
+        elseif res then
+            done += 1
+        end
+    end
+    S.flinging = false
+    cleanFling()
+    notify("Fling terminé (" .. done .. " joueur(s))", done > 0 and "good" or "bad")
+end
+
+local pFling = newTab("💥  Fling")
+Section(pFling, "Fling all")
+Info(pFling, "Envoie tous les autres joueurs du serveur voler dans les airs, un par un.")
+Slider(pFling, "Durée par joueur (s)", 0.5, 6, Config.settings.flingTime or 2.5, function(v) Config.settings.flingTime = v saveConfig() end, 1)
+Button(pFling, "💥 FLING TOUT LE MONDE", function()
+    local all = {}
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p ~= LP then table.insert(all, p) end
+    end
+    task.spawn(flingList, all)
+end, true)
+Button(pFling, "⛔ Stop", function() S.flinging = false end)
 
 -- =====================================================================
 --  ONGLET : ADMIN (console de commandes, pour toi uniquement)
